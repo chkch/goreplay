@@ -45,7 +45,7 @@ function init() {
                 if (proxy.ch[chanID]) {
                     proxy.ch[chanID].forEach(function(ch){
                         let r = ch.cb(msg);
-                        if (r) resp = r; // If one of callback decided not to send response back, do not override it in global callbacks
+                        if (resp) resp = r; // If one of callback decided not to send response back, do not override it in global callbacks
                     })
                     
                     // Cleanup Individual message channels to avoid memory leaks
@@ -58,6 +58,8 @@ function init() {
             if (resp) {
               process.stdout.write(`${resp.rawMeta.toString('hex')}${Buffer.from("\n").toString("hex")}${resp.http.toString('hex')}\n`)
             }
+
+            return resp
         }
     }
 
@@ -379,13 +381,20 @@ function setHttpCookie(payload, name, value) {
     return setHttpHeader(payload, "Cookie", cookies.join("; "))
 }
 
+function deleteHttpCookie(payload, name) {
+    let h = httpHeader(payload, "Cookie");
+    let cookie = h ? h.value : "";
+    let cookies = cookie.split("; ").filter(function(v){ return v.indexOf(name + "=") != 0 })
+    return setHttpHeader(payload, "Cookie", cookies.join("; "))
+}
+
 function httpCookie(payload, name) {
     let h = httpHeader(payload, "Cookie");
     let cookie = h ? h.value : "";
     let value;
     let cookies = cookie.split("; ").forEach(function(v){
         if (v.indexOf(name + "=") == 0) {
-            value = v.split("=")[1];
+            value = v.substr(name.length + 1);
         }
     })
     return value;
@@ -412,6 +421,7 @@ module.exports = {
     setHttpBodyParam: setHttpBodyParam,
     httpCookie: httpCookie,
     setHttpCookie: setHttpCookie,
+    deleteHttpCookie: deleteHttpCookie,
     test: testRunner,
     benchmark: testBenchmark,
     httpHeaders: httpHeaders
@@ -421,7 +431,7 @@ module.exports = {
 // =========== Tests ==============
 
 function testRunner(){
-    ["init", "parseMessage", "httpMethod", "httpPath", "setHttpHeader", "deleteHttpHeader", "httpPathParam", "httpHeader", "httpBody", "setHttpBody", "httpBodyParam", "httpCookie", "setHttpCookie", "httpHeaders"].forEach(function(t){
+    ["init", "filter", "parseMessage", "httpMethod", "httpPath", "setHttpHeader", "deleteHttpHeader", "httpPathParam", "httpHeader", "httpBody", "setHttpBody", "httpBodyParam", "httpCookie", "setHttpCookie", "deleteHttpCookie", "httpHeaders"].forEach(function(t){
         console.log(`====== Start ${t} =======`)
         eval(`TEST_${t}()`)
         console.log(`====== End ${t} =======`)
@@ -495,6 +505,7 @@ function TEST_init() {
     let req = parseMessage(Buffer.from("1 2 3\nGET / HTTP/1.1\r\n\r\n").toString('hex'));
     let resp = parseMessage(Buffer.from("2 2 3\nHTTP/1.1 200 OK\r\n\r\n").toString('hex'));
     let resp2 = parseMessage(Buffer.from("2 3 3\nHTTP/1.1 200 OK\r\n\r\n").toString('hex'));
+    
     gor.emit(req);
     gor.emit(resp);
     gor.emit(resp2);
@@ -504,6 +515,34 @@ function TEST_init() {
     if (received != 5) {
         fail(`Should receive 5 messages: ${received}`);
     }
+}
+
+function TEST_filter() {
+    const child_process = require('child_process');
+
+    let gor = init();
+    gor.on("request", function(req){
+        if (httpPath(req.http) != "/filter") {
+            return req
+        }
+    });
+
+    gor.on("request", function(req){
+        return req
+    });
+
+
+    let reqPass = parseMessage(Buffer.from("1 2 3\nGET / HTTP/1.1\r\n\r\n").toString('hex'));
+    let reqFilter = parseMessage(Buffer.from("1 2 3\nGET /filter HTTP/1.1\r\n\r\n").toString('hex'));
+    
+    if (!gor.emit(reqPass)) {
+        return fail("Should not filter request")
+    }
+
+    if (gor.emit(reqFilter)) {
+        return fail("Should filter request even if one middleware rejected it")
+    }
+
 }
 
 function TEST_parseMessage() {
@@ -707,6 +746,15 @@ function TEST_setHttpCookie() {
         return fail(`Should add new cookie: ${p}`)
     }
 }
+
+function TEST_deleteHttpCookie() {
+    const examplePayload = "GET / HTTP/1.1\r\nCookie: a=b; test=zxc\r\n\r\n";
+    let p = deleteHttpCookie(Buffer.from(examplePayload), "a");
+    if (p != "GET / HTTP/1.1\r\nCookie: test=zxc\r\n\r\n") {
+        return fail(`Should delete cookie: ${p}`)
+    }
+}
+
 
 function TEST_httpHeaders() {
     const examplePayload = "GET / HTTP/1.1\r\nHost: localhost:3000\r\nUser-Agent: Node\r\nContent-Length:5\r\n\r\nhello";
